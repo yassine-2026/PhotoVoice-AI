@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import express from 'express';
 import path from 'path';
 import multer from 'multer';
@@ -8,6 +9,19 @@ import sharp from 'sharp';
 import cors from 'cors';
 import FormData from 'form-data';
 import fetch from 'node-fetch'; // Requires node-fetch or use native fetch if Node >= 18
+
+// Initialize Face Detection
+import * as tf from '@tensorflow/tfjs-node';
+import * as faceapi from '@vladmandic/face-api';
+
+const MODELS_URL = path.join(process.cwd(), 'models');
+let faceDetectionAvailable = false;
+faceapi.nets.ssdMobilenetv1.loadFromDisk(MODELS_URL).then(() => {
+    faceDetectionAvailable = true;
+    console.log("Face API models loaded successfully");
+}).catch(err => {
+    console.error("Failed to load Face API models", err);
+});
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -26,15 +40,6 @@ app.get('/api/health', async (req, res) => {
     const ffmpegCheck = spawnSync('which', ['ffmpeg']);
     const hasFfmpeg = ffmpegCheck.status === 0;
     
-    let faceDetectionAvailable = false;
-    try {
-        require.resolve('@tensorflow/tfjs-node');
-        require.resolve('@vladmandic/face-api');
-        faceDetectionAvailable = true; 
-    } catch (e) {
-        faceDetectionAvailable = false;
-    }
-
     const sadTalkerUrl = process.env.SADTALKER_API_URL;
     let sadTalkerReady = false;
     
@@ -71,6 +76,23 @@ app.post('/api/upload/image', upload.single('image'), async (req, res) => {
         if (!metadata.width || !metadata.height) {
             fs.unlinkSync(req.file.path);
             return res.status(400).json({ error: 'Invalid image dimensions' });
+        }
+        
+        // Actual Face Detection
+        try {
+            const imgBuffer = await fs.promises.readFile(req.file.path);
+            const decoded = tf.node.decodeImage(imgBuffer, 3);
+            const detection = await faceapi.detectSingleFace(decoded as any);
+            tf.dispose(decoded);
+            
+            if (!detection) {
+                fs.unlinkSync(req.file.path);
+                return res.status(400).json({ error: 'No face detected in the uploaded image. Please provide a clear face image.' });
+            }
+        } catch (e) {
+            console.error("Face detection error:", e);
+            fs.unlinkSync(req.file.path);
+            return res.status(400).json({ error: 'Failed to process image for face detection.' });
         }
         
         res.json({ 
